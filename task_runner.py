@@ -459,7 +459,7 @@ def _get_mailtm_domain():
     except Exception:
         pass
     # Fallback: try common Mail.tm domains
-    for fallback in ["dollicons.com", "wireke.com", "fthcapital.com"]:
+    for fallback in ["sharebot.net", "dollicons.com", "wireke.com"]:
         try:
             res2 = session.head(f"https://{fallback}", timeout=5, impersonate="chrome131")
             return fallback
