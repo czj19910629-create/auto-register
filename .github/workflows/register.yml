@@ -2,7 +2,7 @@ name: Daily Task Job
 
 on:
   schedule:
-    - cron: '*/40 * * * *'
+    - cron: '0 2 * * *'  # 每天北京时间 10:00 (UTC 02:00)
   workflow_dispatch:
     inputs:
       count:
