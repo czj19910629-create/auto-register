@@ -1,0 +1,75 @@
+name: Daily Task Job
+
+on:
+  schedule:
+    - cron: '*/40 * * * *'
+  workflow_dispatch:
+    inputs:
+      count:
+        description: '本次手动运行注册数量'
+        required: false
+        default: '40'
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run registration
+        env:
+          REG_COUNT: ${{ github.event.inputs.count || '40' }}
+        run: |
+          mkdir -p codex
+          for i in $(seq 1 $REG_COUNT); do
+            echo "========== 第 $i/$REG_COUNT 次注册 =========="
+            python task_runner.py --once || true
+            if [ "$i" -lt "$REG_COUNT" ]; then
+              SLEEP=$((RANDOM % 20 + 10))
+              echo "[*] 等待 ${SLEEP}s..."
+              sleep $SLEEP
+            fi
+          done
+
+      - name: Upload to server
+        if: always()
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+        run: |
+          for file in codex/*.json; do
+            [ -f "$file" ] || continue
+            curl -X POST "$API_URL/webhook/github" \
+              -H "Content-Type: application/json" \
+              -H "X-Webhook-Secret: $WEBHOOK_SECRET" \
+              -d @"$file" || echo "Failed: $file"
+          done
+
+      - name: Notify Feishu
+        if: always()
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          COUNT=$(find codex -name '*.json' 2>/dev/null | wc -l)
+          
+          if [ "$COUNT" -gt 0 ]; then
+            MSG="{\"msg_type\":\"text\",\"content\":{\"text\":\"📦 注册任务完成\n✅ 本次产出: ${COUNT} 个账户\n🔗 Run #${{ github.run_number }}\"}}"
+          else
+            MSG="{\"msg_type\":\"text\",\"content\":{\"text\":\"❌ 注册任务完成\n本次无产出\n🔗 Run #${{ github.run_number }}\"}}"
+          fi
+          
+          curl -X POST "$FEISHU_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$MSG" || true
