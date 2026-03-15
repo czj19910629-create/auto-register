@@ -60,16 +60,26 @@ jobs:
       - name: Notify Feishu
         if: always()
         env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_USER_ID: ${{ secrets.FEISHU_USER_ID }}
         run: |
           COUNT=$(find codex -name '*.json' 2>/dev/null | wc -l)
           
+          # 获取 access token
+          TOKEN=$(curl -s -X POST "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal" \
+            -H "Content-Type: application/json" \
+            -d "{\"app_id\":\"$FEISHU_APP_ID\",\"app_secret\":\"$FEISHU_APP_SECRET\"}" \
+            | grep -o '"tenant_access_token":"[^"]*"' | cut -d'"' -f4)
+          
           if [ "$COUNT" -gt 0 ]; then
-            MSG="{\"msg_type\":\"text\",\"content\":{\"text\":\"📦 注册任务完成\n✅ 本次产出: ${COUNT} 个账户\n🔗 Run #${{ github.run_number }}\"}}"
+            TEXT="📦 注册任务完成\n✅ 本次产出: ${COUNT} 个账户\n🔗 Run #${{ github.run_number }}"
           else
-            MSG="{\"msg_type\":\"text\",\"content\":{\"text\":\"❌ 注册任务完成\n本次无产出\n🔗 Run #${{ github.run_number }}\"}}"
+            TEXT="❌ 注册任务完成\n本次无产出\n🔗 Run #${{ github.run_number }}"
           fi
           
-          curl -X POST "$FEISHU_WEBHOOK" \
+          # 发送消息
+          curl -s -X POST "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "$MSG" || true
+            -d "{\"receive_id\":\"$FEISHU_USER_ID\",\"msg_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"$TEXT\\\"}\"}" || true
