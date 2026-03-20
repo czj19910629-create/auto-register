@@ -106,13 +106,14 @@ TOKEN_JSON_DIR = _CONFIG["token_json_dir"]
 
 # 初始化 Cloudflare 邮箱服务
 CF_EMAIL_SERVICE = None
-if USE_CLOUDFLARE_EMAIL and USE_CLOUDFLARE_EMAIL:
+if USE_CLOUDFLARE_EMAIL:
     try:
         CF_EMAIL_SERVICE = CloudflareEmailService(CLOUDFLARE_EMAIL_API)
         print(f"✅ 已启用 Cloudflare 临时邮箱: {CLOUDFLARE_EMAIL_API}")
     except Exception as e:
         print(f"⚠️ Cloudflare 邮箱初始化失败: {e}，将回退到 Mail.tm")
         USE_CLOUDFLARE_EMAIL = False
+        CF_EMAIL_SERVICE = None
 
 if not USE_CLOUDFLARE_EMAIL and not DUCKMAIL_BEARER:
     print("⚠️ 警告: 未设置 DUCKMAIL_BEARER 且 Cloudflare 邮箱不可用")
