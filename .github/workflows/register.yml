@@ -31,8 +31,7 @@ jobs:
         env:
           REG_COUNT: ${{ github.event.inputs.count || '40' }}
           PROXY: http://customer-q9oqTxb2u3-cc-US-sessid-1774029610_10000:x0vgOxzwxlnZIIb@gate-sg.ipfoxy.io:58688
-          USE_CLOUDFLARE_EMAIL: true
-          CLOUDFLARE_EMAIL_API: https://mail-api.hznan0629.cloud
+          USE_CLOUDFLARE_EMAIL: false
         run: |
           mkdir -p codex
           for i in $(seq 1 $REG_COUNT); do
