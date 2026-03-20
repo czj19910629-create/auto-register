@@ -1,7 +1,7 @@
 """
-ChatGPT 批量自动注册工具 (并发版) - DuckMail 临时邮箱版
-依赖: pip install curl_cffi
-功能: 使用 DuckMail 临时邮箱，并发自动注册 ChatGPT 账号，自动获取 OTP 验证码
+ChatGPT 批量自动注册工具 (并发版) - Cloudflare 临时邮箱版
+依赖: pip install curl_cffi requests
+功能: 使用 Cloudflare Workers 临时邮箱 + IPFoxy 代理，并发自动注册 ChatGPT 账号
 """
 
 import os
@@ -22,6 +22,14 @@ from urllib.parse import urlparse, parse_qs, urlencode
 
 from curl_cffi import requests as curl_requests
 
+# 导入 Cloudflare 邮箱服务
+try:
+    from cloudflare_email import CloudflareEmailService
+    USE_CLOUDFLARE_EMAIL = True
+except ImportError:
+    USE_CLOUDFLARE_EMAIL = False
+    print("⚠️ cloudflare_email.py 未找到，将使用 Mail.tm")
+
 # ================= 加载配置 =================
 def _load_config():
     """从 config.json 加载配置，环境变量优先级更高"""
@@ -29,7 +37,9 @@ def _load_config():
         "total_accounts": 3,
         "duckmail_api_base": "https://api.duckmail.sbs",
         "duckmail_bearer": "",
-        "proxy": "",
+        "proxy": "http://customer-q9oqTxb2u3-cc-US:x0vgOxzwxlnZIIb@gate.ipfoxy.io:58688",
+        "cloudflare_email_api": "https://mail-api.hznan0629.cloud",
+        "use_cloudflare_email": True,
         "output_file": "registered_accounts.txt",
         "enable_oauth": True,
         "oauth_required": True,
@@ -54,6 +64,8 @@ def _load_config():
     config["duckmail_api_base"] = os.environ.get("DUCKMAIL_API_BASE", config["duckmail_api_base"])
     config["duckmail_bearer"] = os.environ.get("DUCKMAIL_BEARER", config["duckmail_bearer"])
     config["proxy"] = os.environ.get("PROXY", config["proxy"])
+    config["cloudflare_email_api"] = os.environ.get("CLOUDFLARE_EMAIL_API", config.get("cloudflare_email_api", "https://mail-api.hznan0629.cloud"))
+    config["use_cloudflare_email"] = os.environ.get("USE_CLOUDFLARE_EMAIL", config.get("use_cloudflare_email", True))
     config["total_accounts"] = int(os.environ.get("TOTAL_ACCOUNTS", config["total_accounts"]))
     config["enable_oauth"] = os.environ.get("ENABLE_OAUTH", config["enable_oauth"])
     config["oauth_required"] = os.environ.get("OAUTH_REQUIRED", config["oauth_required"])
@@ -78,6 +90,8 @@ def _as_bool(value):
 _CONFIG = _load_config()
 DUCKMAIL_API_BASE = _CONFIG["duckmail_api_base"]
 DUCKMAIL_BEARER = _CONFIG["duckmail_bearer"]
+CLOUDFLARE_EMAIL_API = _CONFIG.get("cloudflare_email_api", "https://mail-api.hznan0629.cloud")
+USE_CLOUDFLARE_EMAIL = _as_bool(_CONFIG.get("use_cloudflare_email", True))
 DEFAULT_TOTAL_ACCOUNTS = _CONFIG["total_accounts"]
 DEFAULT_PROXY = _CONFIG["proxy"]
 DEFAULT_OUTPUT_FILE = _CONFIG["output_file"]
@@ -90,14 +104,65 @@ AK_FILE = _CONFIG["ak_file"]
 RK_FILE = _CONFIG["rk_file"]
 TOKEN_JSON_DIR = _CONFIG["token_json_dir"]
 
-if not DUCKMAIL_BEARER:
-    print("⚠️ 警告: 未设置 DUCKMAIL_BEARER，请在 config.json 中设置或设置环境变量")
+# 初始化 Cloudflare 邮箱服务
+CF_EMAIL_SERVICE = None
+if USE_CLOUDFLARE_EMAIL and USE_CLOUDFLARE_EMAIL:
+    try:
+        CF_EMAIL_SERVICE = CloudflareEmailService(CLOUDFLARE_EMAIL_API)
+        print(f"✅ 已启用 Cloudflare 临时邮箱: {CLOUDFLARE_EMAIL_API}")
+    except Exception as e:
+        print(f"⚠️ Cloudflare 邮箱初始化失败: {e}，将回退到 Mail.tm")
+        USE_CLOUDFLARE_EMAIL = False
+
+if not USE_CLOUDFLARE_EMAIL and not DUCKMAIL_BEARER:
+    print("⚠️ 警告: 未设置 DUCKMAIL_BEARER 且 Cloudflare 邮箱不可用")
     print("   文件: config.json -> duckmail_bearer")
     print("   环境变量: export DUCKMAIL_BEARER='your_api_key_here'")
 
 # 全局线程锁
 _print_lock = threading.Lock()
 _file_lock = threading.Lock()
+_stop_event = threading.Event()
+_fatal_reason_lock = threading.Lock()
+_FATAL_REASON = None
+
+
+_FATAL_ERROR_KEYWORDS = {
+    "registration_disallowed": "target_risk_block",
+    "error_code=registration_disallowed": "target_risk_block",
+    '"error":"registration_disallowed"': "target_risk_block",
+}
+
+_MAILTM_ERROR_KEYWORDS = {
+    "mail.tm": "mailtm_failure",
+    "获取邮件 token 失败": "mailtm_failure",
+    "创建邮箱失败": "mailtm_failure",
+    "too many requests": "mailtm_rate_limit",
+    "rate limit": "mailtm_rate_limit",
+    "429": "mailtm_rate_limit",
+}
+
+
+def _classify_error(error_msg: str):
+    msg = (error_msg or "").lower()
+    for keyword, code in _FATAL_ERROR_KEYWORDS.items():
+        if keyword in msg:
+            return code
+    for keyword, code in _MAILTM_ERROR_KEYWORDS.items():
+        if keyword in msg:
+            return code
+    return "unknown"
+
+
+
+def _set_fatal_reason(reason: str):
+    global _FATAL_REASON
+    if not reason:
+        return
+    with _fatal_reason_lock:
+        if not _FATAL_REASON:
+            _FATAL_REASON = reason
+            _stop_event.set()
 
 
 # Chrome 指纹配置: impersonate 与 sec-ch-ua 必须匹配真实浏览器
@@ -468,7 +533,29 @@ def _get_mailtm_domain():
     return "dollicons.com"
 
 
+def create_temp_email_cloudflare():
+    """使用 Cloudflare Workers 创建临时邮箱，返回 (email, password, mail_token)"""
+    try:
+        email, token = CF_EMAIL_SERVICE.create_email()
+        password = "cloudflare_temp"  # Cloudflare 邮箱不需要密码
+        return email, password, token
+    except Exception as e:
+        raise Exception(f"Cloudflare 邮箱创建失败: {e}")
+
+
 def create_temp_email():
+    """创建临时邮箱，优先使用 Cloudflare，失败则回退到 Mail.tm"""
+    if USE_CLOUDFLARE_EMAIL and CF_EMAIL_SERVICE:
+        try:
+            return create_temp_email_cloudflare()
+        except Exception as e:
+            print(f"⚠️ Cloudflare 邮箱失败，回退到 Mail.tm: {e}")
+    
+    # 回退到 Mail.tm
+    return create_temp_email_mailtm()
+
+
+def create_temp_email_mailtm():
     """创建 Mail.tm 临时邮箱，返回 (email, password, mail_token)"""
     # 生成随机邮箱前缀 8-13 位
     chars = string.ascii_lowercase + string.digits
@@ -513,6 +600,26 @@ def create_temp_email():
 
     except Exception as e:
         raise Exception(f"Mail.tm 创建邮箱失败: {e}")
+
+
+def _fetch_emails_cloudflare(email: str):
+    """从 Cloudflare 获取邮件列表"""
+    try:
+        if CF_EMAIL_SERVICE:
+            return CF_EMAIL_SERVICE.get_messages(email)
+        return []
+    except Exception:
+        return []
+
+
+def _fetch_email_detail_cloudflare(email: str, msg_id: str):
+    """获取 Cloudflare 单封邮件详情"""
+    try:
+        if CF_EMAIL_SERVICE:
+            return CF_EMAIL_SERVICE.get_message_content(email, msg_id)
+        return None
+    except Exception:
+        return None
 
 
 def _fetch_emails_mailtm(mail_token: str):
@@ -584,22 +691,35 @@ def _extract_verification_code(email_content: str):
     return None
 
 
-def wait_for_verification_email(mail_token: str, timeout: int = 120):
-    """等待并提取 OpenAI 验证码"""
+def wait_for_verification_email(mail_token: str, timeout: int = 120, email: str = None):
+    """等待并提取 OpenAI 验证码，支持 Cloudflare 和 Mail.tm"""
     start_time = time.time()
+    
+    # 判断是否使用 Cloudflare 邮箱（通过邮箱域名判断）
+    use_cf = email and "@hznan0629.cloud" in email
 
     while time.time() - start_time < timeout:
-        messages = _fetch_emails_mailtm(mail_token)
+        if use_cf and email:
+            # 使用 Cloudflare 邮箱
+            messages = _fetch_emails_cloudflare(email)
+        else:
+            # 使用 Mail.tm
+            messages = _fetch_emails_mailtm(mail_token)
+            
         if messages and len(messages) > 0:
             # 获取最新邮件详情
             first_msg = messages[0]
             msg_id = first_msg.get("id") or first_msg.get("@id")
 
             if msg_id:
-                detail = _fetch_email_detail_mailtm(mail_token, msg_id)
+                if use_cf and email:
+                    detail = _fetch_email_detail_cloudflare(email, msg_id)
+                else:
+                    detail = _fetch_email_detail_mailtm(mail_token, msg_id)
+                    
                 if detail:
-                    # Mail.tm 的邮件内容在 text 或 html 字段
-                    content = detail.get("text") or detail.get("html") or ""
+                    # 提取邮件内容
+                    content = detail.get("text") or detail.get("html") or detail.get("body") or ""
                     code = _extract_verification_code(content)
                     if code:
                         return code
@@ -811,21 +931,32 @@ class ChatGPTRegister:
                 return code
         return None
 
-    def wait_for_verification_email(self, mail_token: str, timeout: int = 120):
-        """等待并提取 OpenAI 验证码"""
+    def wait_for_verification_email(self, mail_token: str, timeout: int = 120, email: str = None):
+        """等待并提取 OpenAI 验证码，支持 Cloudflare 和 Mail.tm"""
         self._print(f"[OTP] 等待验证码邮件 (最多 {timeout}s)...")
         start_time = time.time()
+        
+        # 判断是否使用 Cloudflare 邮箱
+        use_cf = email and "@hznan0629.cloud" in email
 
         while time.time() - start_time < timeout:
-            messages = self._fetch_emails_mailtm(mail_token)
+            if use_cf and email:
+                messages = _fetch_emails_cloudflare(email)
+            else:
+                messages = self._fetch_emails_mailtm(mail_token)
+                
             if messages and len(messages) > 0:
                 first_msg = messages[0]
                 msg_id = first_msg.get("id") or first_msg.get("@id")
 
                 if msg_id:
-                    detail = self._fetch_email_detail_mailtm(mail_token, msg_id)
+                    if use_cf and email:
+                        detail = _fetch_email_detail_cloudflare(email, msg_id)
+                    else:
+                        detail = self._fetch_email_detail_mailtm(mail_token, msg_id)
+                        
                     if detail:
-                        content = detail.get("text") or detail.get("html") or ""
+                        content = detail.get("text") or detail.get("html") or detail.get("body") or ""
                         code = self._extract_verification_code(content)
                         if code:
                             self._print(f"[OTP] 验证码: {code}")
@@ -998,8 +1129,8 @@ class ChatGPTRegister:
             need_otp = True
 
         if need_otp:
-            # 使用 DuckMail 等待验证码
-            otp_code = self.wait_for_verification_email(mail_token)
+            # 等待验证码，传入 email 参数以支持 Cloudflare 邮箱
+            otp_code = self.wait_for_verification_email(mail_token, email=email)
             if not otp_code:
                 raise Exception("未能获取验证码")
 
@@ -1009,7 +1140,7 @@ class ChatGPTRegister:
                 self._print("验证码失败，重试...")
                 self.send_otp()
                 _random_delay(1.0, 2.0)
-                otp_code = self.wait_for_verification_email(mail_token, timeout=60)
+                otp_code = self.wait_for_verification_email(mail_token, timeout=60, email=email)
                 if not otp_code:
                     raise Exception("重试后仍未获取验证码")
                 _random_delay(0.3, 0.8)
@@ -1656,6 +1787,8 @@ class ChatGPTRegister:
 def _register_one(idx, total, proxy, output_file):
     """单个注册任务 (在线程中运行) - 使用 Mail.tm 临时邮箱"""
     reg = None
+    if _stop_event.is_set():
+        return False, None, f"skipped_due_to_fatal:{_FATAL_REASON or 'unknown'}"
     try:
         reg = ChatGPTRegister(proxy=proxy, tag=f"{idx}")
 
@@ -1706,15 +1839,24 @@ def _register_one(idx, total, proxy, output_file):
 
     except Exception as e:
         error_msg = str(e)
+        error_type = _classify_error(error_msg)
+        if error_type == "target_risk_block":
+            _set_fatal_reason(error_type)
         with _print_lock:
             print(f"\n[FAIL] [{idx}] 注册失败: {error_msg}")
+            print(f"[FAIL] [{idx}] 错误分类: {error_type}")
+            if error_type == "target_risk_block":
+                print(f"[FATAL] [{idx}] 命中目标方注册风控，后续任务将停止，避免无效重试。")
             traceback.print_exc()
-        return False, None, error_msg
+        return False, None, f"{error_type}:{error_msg}"
 
 
 def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
               max_workers=3, proxy=None):
     """并发批量注册 - Mail.tm 临时邮箱版"""
+    global _FATAL_REASON
+    _stop_event.clear()
+    _FATAL_REASON = None
     # 如果没传 proxy，从 config 读取
     if not proxy:
         proxy = DEFAULT_PROXY or None
@@ -1739,6 +1881,9 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     with ThreadPoolExecutor(max_workers=actual_workers) as executor:
         futures = {}
         for idx in range(1, total_accounts + 1):
+            if _stop_event.is_set():
+                print(f"[STOP] 检测到致命错误，停止提交后续任务。原因: {_FATAL_REASON}")
+                break
             future = executor.submit(
                 _register_one, idx, total_accounts, proxy, output_file
             )
@@ -1751,6 +1896,9 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
                 if ok:
                     success_count += 1
                 else:
+                    if err and str(err).startswith("skipped_due_to_fatal:"):
+                        print(f"  [账号 {idx}] 跳过: {err}")
+                        continue
                     fail_count += 1
                     print(f"  [账号 {idx}] 失败: {err}")
             except Exception as e:
@@ -1764,9 +1912,17 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     print(f"  注册完成! 耗时 {elapsed:.1f} 秒")
     print(f"  总数: {total_accounts} | 成功: {success_count} | 失败: {fail_count}")
     print(f"  平均速度: {avg:.1f} 秒/个")
+    if _FATAL_REASON:
+        print(f"  致命原因: {_FATAL_REASON}")
     if success_count > 0:
         print(f"  结果文件: {output_file}")
     print(f"{'#'*60}")
+
+    if _FATAL_REASON == 'target_risk_block':
+        return 21
+    if fail_count > 0 and success_count == 0:
+        return 1
+    return 0
 
 
 def main():
@@ -1778,8 +1934,8 @@ def main():
     if args.once:
         # GitHub Actions 模式：注册一个账号
         proxy = os.environ.get("PROXY") or DEFAULT_PROXY
-        run_batch(total_accounts=1, output_file=DEFAULT_OUTPUT_FILE, max_workers=1, proxy=proxy)
-        return
+        code = run_batch(total_accounts=1, output_file=DEFAULT_OUTPUT_FILE, max_workers=1, proxy=proxy)
+        raise SystemExit(code)
     
     # 交互式模式
     print("=" * 60)
@@ -1816,8 +1972,9 @@ def main():
     workers_input = input("并发数 (默认 3): ").strip()
     max_workers = int(workers_input) if workers_input.isdigit() and int(workers_input) > 0 else 3
 
-    run_batch(total_accounts=total_accounts, output_file=DEFAULT_OUTPUT_FILE,
+    code = run_batch(total_accounts=total_accounts, output_file=DEFAULT_OUTPUT_FILE,
               max_workers=max_workers, proxy=proxy)
+    raise SystemExit(code)
 
 
 if __name__ == "__main__":

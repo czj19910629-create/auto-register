@@ -25,11 +25,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install curl_cffi
+        run: pip install curl_cffi requests
 
       - name: Run registration
         env:
           REG_COUNT: ${{ github.event.inputs.count || '40' }}
+          PROXY: ${{ secrets.IPFOXY_PROXY }}
+          USE_CLOUDFLARE_EMAIL: true
+          CLOUDFLARE_EMAIL_API: https://mail-api.hznan0629.cloud
         run: |
           mkdir -p codex
           for i in $(seq 1 $REG_COUNT); do
