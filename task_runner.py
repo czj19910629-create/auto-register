@@ -855,50 +855,8 @@ class ChatGPTRegister:
         return session
 
     def create_temp_email(self):
-        """创建 Mail.tm 临时邮箱，返回 (email, password, mail_token)"""
-        # 生成随机邮箱前缀 8-13 位
-        chars = string.ascii_lowercase + string.digits
-        length = random.randint(8, 13)
-        email_local = "".join(random.choice(chars) for _ in range(length))
-        domain = _get_mailtm_domain()
-        email = f"{email_local}@{domain}"
-        password = _generate_password()
-
-        session = self._create_mailtm_session()
-
-        try:
-            # 1. 创建账号
-            payload = {"address": email, "password": password}
-            res = session.post(
-                f"{MAILTM_API_BASE}/accounts",
-                json=payload,
-                timeout=15,
-                impersonate=self.impersonate
-            )
-
-            if res.status_code not in [200, 201]:
-                raise Exception(f"创建邮箱失败: {res.status_code} - {res.text[:200]}")
-
-            # 2. 获取 Token（用于读取邮件）
-            time.sleep(0.5)
-            token_payload = {"address": email, "password": password}
-            token_res = session.post(
-                f"{MAILTM_API_BASE}/token",
-                json=token_payload,
-                timeout=15,
-                impersonate=self.impersonate
-            )
-
-            if token_res.status_code == 200:
-                token_data = token_res.json()
-                mail_token = token_data.get("token")
-                if mail_token:
-                    return email, password, mail_token
-
-            raise Exception(f"获取邮件 Token 失败: {token_res.status_code}")
-
-        except Exception as e:
-            raise Exception(f"Mail.tm 创建邮箱失败: {e}")
+        """创建临时邮箱，优先使用 Cloudflare"""
+        return create_temp_email()
 
     def _fetch_emails_mailtm(self, mail_token: str):
         """从 Mail.tm 获取邮件列表（直连，不走代理）"""
