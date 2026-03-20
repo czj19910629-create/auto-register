@@ -18,7 +18,7 @@ import secrets
 import hashlib
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote
 
 from curl_cffi import requests as curl_requests
 
@@ -756,6 +756,28 @@ def _random_birthdate():
 _DEBUG = os.environ.get("DEBUG", "").strip().lower() in {"1", "true", "yes"}
 
 
+def _fix_proxy_url(proxy: str) -> str:
+    """修复代理 URL 格式，对用户名密码进行 URL 编码"""
+    if not proxy:
+        return proxy
+    
+    try:
+        # 解析代理 URL: http://username:password@host:port
+        if "@" in proxy:
+            scheme_auth, host_port = proxy.rsplit("@", 1)
+            if "://" in scheme_auth:
+                scheme, auth = scheme_auth.split("://", 1)
+                if ":" in auth:
+                    username, password = auth.split(":", 1)
+                    # URL 编码用户名和密码
+                    username_encoded = quote(username, safe='')
+                    password_encoded = quote(password, safe='')
+                    return f"{scheme}://{username_encoded}:{password_encoded}@{host_port}"
+        return proxy
+    except Exception:
+        return proxy
+
+
 class ChatGPTRegister:
     BASE = "https://chatgpt.com"
     AUTH = "https://auth.openai.com"
@@ -768,7 +790,7 @@ class ChatGPTRegister:
 
         self.session = curl_requests.Session(impersonate=self.impersonate)
 
-        self.proxy = proxy
+        self.proxy = _fix_proxy_url(proxy) if proxy else None
         if self.proxy:
             self.session.proxies = {"http": self.proxy, "https": self.proxy}
 
