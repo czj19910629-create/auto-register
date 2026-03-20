@@ -1,6 +1,5 @@
 {
   "total_accounts": 1,
-  "proxy": "http://customer-q9oqTxb2u3-cc-US:x0vgOxzwxlnZIIb@gate.ipfoxy.io:58688",
   "cloudflare_email_api": "https://mail-api.hznan0629.cloud",
   "use_cloudflare_email": true,
   "enable_oauth": true,
