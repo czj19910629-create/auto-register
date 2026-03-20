@@ -45,11 +45,16 @@ class CloudflareEmailService:
         except Exception as e:
             raise Exception(f"Cloudflare 邮箱创建失败: {e}")
     
-    def get_messages(self, email):
-        """获取邮件列表"""
+    def get_messages(self, email, token=None):
+        """获取邮件列表，需要 JWT token"""
         try:
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            
             resp = self.session.get(
                 f"{self.api_base}/api/mails/{email}",
+                headers=headers,
                 timeout=10
             )
             
@@ -60,11 +65,16 @@ class CloudflareEmailService:
         except Exception:
             return []
     
-    def get_message_content(self, email, message_id):
-        """获取邮件内容"""
+    def get_message_content(self, email, message_id, token=None):
+        """获取邮件内容，需要 JWT token"""
         try:
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            
             resp = self.session.get(
                 f"{self.api_base}/api/mails/{email}/{message_id}",
+                headers=headers,
                 timeout=10
             )
             

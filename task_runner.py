@@ -610,21 +610,21 @@ def create_temp_email_mailtm():
         raise Exception(f"Mail.tm 创建邮箱失败: {e}")
 
 
-def _fetch_emails_cloudflare(email: str):
+def _fetch_emails_cloudflare(email: str, token: str = None):
     """从 Cloudflare 获取邮件列表"""
     try:
         if CF_EMAIL_SERVICE:
-            return CF_EMAIL_SERVICE.get_messages(email)
+            return CF_EMAIL_SERVICE.get_messages(email, token)
         return []
     except Exception:
         return []
 
 
-def _fetch_email_detail_cloudflare(email: str, msg_id: str):
+def _fetch_email_detail_cloudflare(email: str, msg_id: str, token: str = None):
     """获取 Cloudflare 单封邮件详情"""
     try:
         if CF_EMAIL_SERVICE:
-            return CF_EMAIL_SERVICE.get_message_content(email, msg_id)
+            return CF_EMAIL_SERVICE.get_message_content(email, msg_id, token)
         return None
     except Exception:
         return None
@@ -708,8 +708,8 @@ def wait_for_verification_email(mail_token: str, timeout: int = 120, email: str 
 
     while time.time() - start_time < timeout:
         if use_cf and email:
-            # 使用 Cloudflare 邮箱
-            messages = _fetch_emails_cloudflare(email)
+            # 使用 Cloudflare 邮箱，传递 token
+            messages = _fetch_emails_cloudflare(email, mail_token)
         else:
             # 使用 Mail.tm
             messages = _fetch_emails_mailtm(mail_token)
@@ -721,7 +721,7 @@ def wait_for_verification_email(mail_token: str, timeout: int = 120, email: str 
 
             if msg_id:
                 if use_cf and email:
-                    detail = _fetch_email_detail_cloudflare(email, msg_id)
+                    detail = _fetch_email_detail_cloudflare(email, msg_id, mail_token)
                 else:
                     detail = _fetch_email_detail_mailtm(mail_token, msg_id)
                     
@@ -929,7 +929,7 @@ class ChatGPTRegister:
 
         while time.time() - start_time < timeout:
             if use_cf and email:
-                messages = _fetch_emails_cloudflare(email)
+                messages = _fetch_emails_cloudflare(email, mail_token)
             else:
                 messages = self._fetch_emails_mailtm(mail_token)
                 
@@ -939,7 +939,7 @@ class ChatGPTRegister:
 
                 if msg_id:
                     if use_cf and email:
-                        detail = _fetch_email_detail_cloudflare(email, msg_id)
+                        detail = _fetch_email_detail_cloudflare(email, msg_id, mail_token)
                     else:
                         detail = self._fetch_email_detail_mailtm(mail_token, msg_id)
                         
