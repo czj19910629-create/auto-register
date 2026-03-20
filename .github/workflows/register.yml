@@ -30,7 +30,7 @@ jobs:
       - name: Run registration
         env:
           REG_COUNT: ${{ github.event.inputs.count || '40' }}
-          PROXY: http://customer-q9oqTxb2u3-cc-US-st-California-city-Fontana:x0vgOxzwxlnZIIb@gate-my.ipfoxy.io:58688
+          PROXY: http://customer-q9oqTxb2u3-cc-US:x0vgOxzwxlnZIIb@gate.ipfoxy.io:58688
           USE_CLOUDFLARE_EMAIL: true
           CLOUDFLARE_EMAIL_API: https://mail-api.hznan0629.cloud
         run: |
