@@ -20,9 +20,9 @@ class CloudflareEmailService:
     
     def create_email(self):
         """创建临时邮箱，返回 (email, token)"""
-        # 生成随机邮箱前缀
-        prefix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
-        email = f"{prefix}@hznan0629.cloud"
+        # 生成随机邮箱前缀，加上 tmp 前缀和时间戳
+        import time
+        prefix = f"tmp{''.join(random.choices(string.ascii_lowercase + string.digits, k=8))}{int(time.time())}"
         
         try:
             resp = self.session.post(
@@ -33,7 +33,12 @@ class CloudflareEmailService:
             
             if resp.status_code == 200:
                 data = resp.json()
-                return email, data.get("token") or email
+                email = data.get("address")
+                token = data.get("jwt") or data.get("token") or email
+                if email:
+                    return email, token
+                else:
+                    raise Exception(f"API 返回格式错误: {data}")
             else:
                 raise Exception(f"创建邮箱失败: {resp.status_code} - {resp.text[:200]}")
         
